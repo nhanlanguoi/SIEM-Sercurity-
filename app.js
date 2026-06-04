@@ -146,6 +146,39 @@ async function runAllRules() {
       );
     }
 
+    // ── Rule 8: Path Traversal ─────────────────────────────────────────
+    const pathTraversalIPs = await detectPathTraversal(esClient, config);
+    for (const { ip, count } of pathTraversalIPs) {
+      await sendAlert(
+        `lfi:${ip}`,
+        'LFI / Path Traversal Attempt',
+        `IP "${ip}" co truy cap file he thong ${count} lan trong ${config.PATH_TRAVERSAL_TIME_WINDOW}.`,
+        `Kiem tra va bat WAF chan cac chuoi '../' hay '/etc/passwd' tu IP nay.`
+      );
+    }
+
+    // ── Rule 9: Malicious Upload ───────────────────────────────────────
+    const uploadAttackers = await detectMaliciousUpload(esClient, config);
+    for (const { username, count } of uploadAttackers) {
+      await sendAlert(
+        `upload:${username}`,
+        'Malicious Upload Attempt',
+        `Tai khoan "${username}" tai len file doc hai (Web Shell) ${count} lan.`,
+        `Xoa ngay file moi tai len cua "${username}" va co lap thu muc upload.`
+      );
+    }
+
+    // ── Rule 10: Mass Deletion ─────────────────────────────────────────
+    const massDeleters = await detectMassDeletion(esClient, config);
+    for (const { username, count } of massDeleters) {
+      await sendAlert(
+        `deletion:${username}`,
+        'Mass Deletion (Ransomware/Phá hoại)',
+        `Tai khoan "${username}" da xoa hang loat ${count} du lieu trong ${config.MASS_DELETION_TIME_WINDOW}.`,
+        `Tam khoa quyen WRITE/DELETE cua "${username}" va kiem tra lich su hoat dong.`
+      );
+    }
+
   } catch (error) {
     console.error('Loi khi chay SIEM scan:', error.message);
   }
@@ -161,7 +194,7 @@ async function startEngine() {
   console.log(`📡 Elasticsearch : ${config.ELASTIC_URL}`);
   console.log(`💾 Redis         : ${config.REDIS_URL}`);
   console.log(`⏱️  Quet log      : moi 5 giay`);
-  console.log(`📋 Quy tac giam sat: 7 rules dang hoat dong`);
+  console.log(`📋 Quy tac giam sat: 10 rules dang hoat dong`);
   console.log('');
 
   // Chay quet moi 5 giay

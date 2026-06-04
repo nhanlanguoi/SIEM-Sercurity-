@@ -1,11 +1,7 @@
-const Redis = require('ioredis');
-const redis = new Redis();
-const config = require('../config');
-
-async function detectMassDeletion(logger) {
+async function detectMassDeletion(esClient, config) {
   const timeWindowStr = config.MASS_DELETION_TIME_WINDOW || '1m';
   const threshold = config.MASS_DELETION_THRESHOLD || 5; 
-  const timeWindowSec = 60; 
+  const attackers = [];
 
   const query = {
     query: {
@@ -25,7 +21,7 @@ async function detectMassDeletion(logger) {
   };
 
   try {
-    const { body } = await global.esClient.search({
+    const { body } = await esClient.search({
       index: 'filebeat-*',
       body: query
     });
@@ -34,24 +30,16 @@ async function detectMassDeletion(logger) {
 
     for (const bucket of buckets) {
       if (bucket.doc_count >= threshold) {
-        const username = bucket.key;
-        
-        const redisKey = `alerted_mass_deletion:${username}`;
-        const isAlerted = await redis.get(redisKey);
-
-        if (!isAlerted) {
-          const alertMsg = `Phát hiện hành vi Phá hoại/Ransomware! Tài khoản ${username} đã xóa ${bucket.doc_count} dữ liệu liên tiếp trong thời gian cực ngắn (${timeWindowStr}). Khuyến nghị: Tạm khóa ngay quyền WRITE/DELETE của user, kiểm tra audit log.`;
-          
-          logger.warn(alertMsg);
-          global.writeAlertLog('mass_deletion_alert', null, username, alertMsg);
-
-          await redis.set(redisKey, 'alerted', 'EX', timeWindowSec);
-        }
+        attackers.push({
+          username: bucket.key,
+          count: bucket.doc_count
+        });
       }
     }
   } catch (err) {
-    logger.error('Lỗi khi phân tích Mass Deletion: ' + err.message);
+    console.error('Lỗi khi phân tích Mass Deletion: ' + err.message);
   }
+  return attackers;
 }
 
 module.exports = detectMassDeletion;

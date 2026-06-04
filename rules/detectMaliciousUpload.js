@@ -1,11 +1,7 @@
-const Redis = require('ioredis');
-const redis = new Redis();
-const config = require('../config');
-
-async function detectMaliciousUpload(logger) {
+async function detectMaliciousUpload(esClient, config) {
   const timeWindowStr = config.MALICIOUS_UPLOAD_TIME_WINDOW || '5m';
-  const threshold = config.MALICIOUS_UPLOAD_THRESHOLD || 1; // 1 is enough for alert
-  const timeWindowSec = 300; 
+  const threshold = config.MALICIOUS_UPLOAD_THRESHOLD || 1; 
+  const attackers = [];
 
   const query = {
     query: {
@@ -25,7 +21,7 @@ async function detectMaliciousUpload(logger) {
   };
 
   try {
-    const { body } = await global.esClient.search({
+    const { body } = await esClient.search({
       index: 'filebeat-*',
       body: query
     });
@@ -34,24 +30,16 @@ async function detectMaliciousUpload(logger) {
 
     for (const bucket of buckets) {
       if (bucket.doc_count >= threshold) {
-        const username = bucket.key;
-        
-        const redisKey = `alerted_malicious_upload:${username}`;
-        const isAlerted = await redis.get(redisKey);
-
-        if (!isAlerted) {
-          const alertMsg = `Phát hiện tải lên file nguy hiểm (Web Shell)! Tài khoản ${username} cố gắng tải file không hợp lệ. Khuyến nghị: Cô lập ngay thư mục upload và kiểm tra mã độc.`;
-          
-          logger.warn(alertMsg);
-          global.writeAlertLog('malicious_upload_alert', null, username, alertMsg);
-
-          await redis.set(redisKey, 'alerted', 'EX', timeWindowSec);
-        }
+        attackers.push({
+          username: bucket.key,
+          count: bucket.doc_count
+        });
       }
     }
   } catch (err) {
-    logger.error('Lỗi khi phân tích Malicious Upload: ' + err.message);
+    console.error('Lỗi khi phân tích Malicious Upload: ' + err.message);
   }
+  return attackers;
 }
 
 module.exports = detectMaliciousUpload;
