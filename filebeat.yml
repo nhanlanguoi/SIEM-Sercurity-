@@ -1,0 +1,38 @@
+filebeat.inputs:
+# Input 1: Log bảo mật thô từ các ứng dụng (nguồn tấn công)
+- type: log
+  enabled: true
+  paths:
+    - /Users/nhannt/Desktop/desktop/project/siem-engine/security.log
+  json.keys_under_root: true
+  json.add_error_key: true
+  fields:
+    log_type: security_raw
+  fields_under_root: true
+
+# Input 2: Log cảnh báo phân tích từ SIEM Engine (hiện lên Kibana)
+- type: log
+  enabled: true
+  paths:
+    - /Users/nhannt/Desktop/desktop/project/siem-engine/alerts.log
+  json.keys_under_root: true
+  json.add_error_key: true
+  fields:
+    log_type: siem_alert
+  fields_under_root: true
+
+output.elasticsearch:
+  hosts: ["localhost:9200"]
+  # protocol: "https"
+  # username: "elastic"
+  # password: "changeme"
+
+setup.kibana:
+  host: "localhost:5601"
+
+logging.level: info
+logging.to_files: true
+logging.files:
+  path: /Users/nhannt/Desktop/desktop/project/siem-engine
+  name: filebeat.log
+  keepfiles: 3
