@@ -11,6 +11,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { normalizeSecurityEvent } = require('./services/payloadAnalyzer');
 
 const TARGET_BASE_URL = 'http://localhost:8080';
 const SECURITY_LOG = path.join(__dirname, 'security.log');
@@ -32,7 +33,7 @@ function writeLog(action, username, payload = null, ip = '123.45.67.89', country
   };
   if (payload) logEntry.payload = payload;
 
-  fs.appendFileSync(SECURITY_LOG, JSON.stringify(logEntry) + '\n');
+  fs.appendFileSync(SECURITY_LOG, JSON.stringify(normalizeSecurityEvent(logEntry)) + '\n');
 }
 
 // ─── HTTP Helpers (Tấn công thật vào Backend) ──────────────────────────────
@@ -88,7 +89,7 @@ async function attackBruteForce() {
   console.log('\n【1/10】Brute Force — Đăng nhập sai nhiều lần...');
   const targets = ['admin', 'user1'];
   for (const username of targets) {
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 6; i++) {
       // 1. Tấn công thật
       const res = await post('/api/auth/login', { username, password: `wrong_${i}` });
       // 2. WAF ghi log
@@ -103,26 +104,35 @@ async function attackBruteForce() {
 async function attackSqlInjection() {
   console.log('\n【2/10】SQL Injection — Chèn SQL vào Query Params...');
   const payload = "' OR 1=1 --";
-  const res = await get('/api/posts/search?q=' + encodeURIComponent(payload));
-  writeLog('sqli_attempt', 'anonymous', `Param: q=${payload}`);
-  process.stdout.write(`  ➜ sqli_attempt [?q=' OR 1=1 --] → HTTP ${res.status}\n`);
+  for (let i = 0; i < 2; i++) {
+    const res = await get('/api/posts/search?q=' + encodeURIComponent(payload));
+    writeLog('sqli_attempt', 'anonymous', `Param: q=${payload}`);
+    process.stdout.write(`  ➜ sqli_attempt [?q=' OR 1=1 --] → HTTP ${res.status}\n`);
+    await sleep(100);
+  }
 }
 
 // ─── Kịch bản 3: XSS ────────────────────────────────────────────────────────
 async function attackXss() {
   console.log('\n【3/10】XSS — Gửi mã độc Javascript vào Query...');
   const payload = "<script>alert(1)</script>";
-  const res = await get('/api/posts/search?q=' + encodeURIComponent(payload));
-  writeLog('xss_attempt', 'anonymous', `Param: q=${payload}`);
-  process.stdout.write(`  ➜ xss_attempt [<script>] → HTTP ${res.status}\n`);
+  for (let i = 0; i < 2; i++) {
+    const res = await get('/api/posts/search?q=' + encodeURIComponent(payload));
+    writeLog('xss_attempt', 'anonymous', `Param: q=${payload}`);
+    process.stdout.write(`  ➜ xss_attempt [<script>] → HTTP ${res.status}\n`);
+    await sleep(100);
+  }
 }
 
 // ─── Kịch bản 4: Privilege Escalation ───────────────────────────────────────
 async function attackPrivilegeEscalation() {
   console.log('\n【4/10】Privilege Escalation — Cố truy cập endpoint Admin...');
-  const res = await get('/api/admin/users', { 'Authorization': 'Bearer FAKE_TOKEN' });
-  writeLog('unauthorized_admin_access', 'user_thuong', '/api/admin/users');
-  process.stdout.write(`  ➜ unauthorized_admin_access [/api/admin/users] → HTTP ${res.status}\n`);
+  for (let i = 0; i < 2; i++) {
+    const res = await get('/api/admin/users', { 'Authorization': 'Bearer FAKE_TOKEN' });
+    writeLog('unauthorized_admin_access', 'user_thuong', '/api/admin/users');
+    process.stdout.write(`  ➜ unauthorized_admin_access [/api/admin/users] → HTTP ${res.status}\n`);
+    await sleep(100);
+  }
 }
 
 // ─── Kịch bản 5: Data Exfiltration ──────────────────────────────────────────

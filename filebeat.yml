@@ -21,6 +21,17 @@ filebeat.inputs:
     log_type: siem_alert
   fields_under_root: true
 
+# Input 3: Log phản ứng an toàn/mô phỏng từ SIEM Engine
+- type: log
+  enabled: true
+  paths:
+    - /Users/nhannt/Desktop/desktop/project/siem-engine/responses.log
+  json.keys_under_root: true
+  json.add_error_key: true
+  fields:
+    log_type: siem_response
+  fields_under_root: true
+
 output.elasticsearch:
   hosts: ["localhost:9200"]
   # protocol: "https"

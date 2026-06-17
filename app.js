@@ -17,6 +17,7 @@ const detectMaliciousUpload = require('./rules/detectMaliciousUpload');
 const detectMassDeletion = require('./rules/detectMassDeletion');
 
 const notifier = require('./services/notifier');
+const { executeAutoResponse } = require('./services/autoResponder');
 
 // Ghi alert ra file JSON de Filebeat doc va day len Kibana
 function writeAlertLog(title, detail, recommendation, severity = 'HIGH') {
@@ -44,12 +45,12 @@ redisClient.on('error', (err) => console.error('Redis Client Error', err));
 // Redis duoc dung de chong spam canh bao (deduplication)
 // SIEM hoan toan dung ngoai, khong can thiep vao he thong goc
 // -------------------------------------------------------
-async function sendAlert(key, title, detail, recommendation, severity = 'HIGH') {
+async function sendAlert(key, title, detail, recommendation, severity = 'HIGH', incident = {}) {
   const dedupKey = `alerted:${key}`;
   const alreadyAlerted = await redisClient.get(dedupKey);
 
   if (!alreadyAlerted) {
-    console.log(`\n\ud83d\udea8 [CANH BAO] ${title}`);
+    console.log(`\n🚨 [CANH BAO] ${title}`);
     console.log(`   Muc do   : ${severity}`);
     console.log(`   Chi tiet : ${detail}`);
     console.log(`   Khuyen nghi: ${recommendation}`);
@@ -61,11 +62,17 @@ async function sendAlert(key, title, detail, recommendation, severity = 'HIGH') 
     await redisClient.set(dedupKey, '1', { EX: 3600 });
 
     const message =
-      `\ud83d\udea8 *CANH BAO AN NINH: ${title}*\n` +
+      `🚨 *CANH BAO AN NINH: ${title}*\n` +
       `⚠️ Muc do: ${severity}\n` +
-      `\ud83d\udccc Chi tiet: ${detail}\n` +
-      `\ud83d\udee1\ufe0f Khuyen nghi: ${recommendation}`;
+      `📌 Chi tiet: ${detail}\n` +
+      `🛡️ Khuyen nghi: ${recommendation}`;
     await notifier.sendTelegram(message, config);
+    await executeAutoResponse(config, {
+      ...incident,
+      title,
+      detail,
+      recommendation
+    });
   }
 }
 
@@ -91,7 +98,8 @@ async function runAllRules() {
         item.attackType || 'Brute Force Attack',
         `Doi tuong "${item.username}" co ${item.count} su kien dang nhap bat thuong trong ${config.BRUTE_FORCE_TIME_WINDOW}.`,
         'Kiem tra IP/username lien quan, bat MFA, reset mat khau neu co login_success sau chuoi that bai.',
-        item.severity
+        item.severity,
+        { rule: 'brute_force', targetType: 'username', target: item.username || item.ip }
       );
     }
 
@@ -103,7 +111,8 @@ async function runAllRules() {
         'SQL Injection Attempt',
         `Tai khoan/IP "${item.username || item.ip}" gui payload khop ${item.signature}: ${item.payload}`,
         'Dung prepared statement/ORM parameter binding, validate input va kiem tra endpoint tra HTTP 2xx voi response lon.',
-        item.severity
+        item.severity,
+        { rule: 'sqli', targetType: item.username ? 'username' : 'ip', target: item.username || item.ip }
       );
     }
 
@@ -115,7 +124,8 @@ async function runAllRules() {
         'Cross-Site Scripting (XSS)',
         `${item.xssType || 'XSS attempt'} tu "${item.username}" khop ${item.signature}: ${item.payload}`,
         'Encode output theo context HTML/JS/URL, sanitize rich text, va kiem tra Stored XSS neu payload nam trong body POST/PUT.',
-        item.severity
+        item.severity,
+        { rule: 'xss', targetType: 'username', target: item.username }
       );
     }
 
@@ -127,7 +137,8 @@ async function runAllRules() {
         'DDoS / Flood Attack',
         `IP "${item.target || item.ip}" da gui ${item.count} request trong ${config.DDOS_TIME_WINDOW}. Mau URI: ${item.sampleUri || 'N/A'}.`,
         'Bat rate limit tren CDN/WAF/API Gateway va dua IP vuot nguong vao danh sach chan tam thoi.',
-        item.severity
+        item.severity,
+        { rule: 'ddos', targetType: 'ip', target: item.target || item.ip }
       );
     }
 
@@ -139,7 +150,8 @@ async function runAllRules() {
         'Privilege Escalation Attempt',
         `Tai khoan "${item.username}" truy cap endpoint dac quyen ${item.count} lan. URI: ${item.uri || 'N/A'}, HTTP ${item.status || 'N/A'}.`,
         'Kiem tra RBAC tren endpoint admin, thu hoi session/token nghi ngo va audit cac request 2xx.',
-        item.severity
+        item.severity,
+        { rule: 'privilege_escalation', targetType: 'username', target: item.username }
       );
     }
 
@@ -151,7 +163,8 @@ async function runAllRules() {
         'Impossible Travel / Geo Anomaly',
         `Tai khoan "${item.username}" dang nhap tu ${item.countries.join(' va ')} trong ${config.GEO_ANOMALY_TIME_WINDOW}.`,
         'Buoc dang xuat tat ca phien, yeu cau MFA va xac minh IP/country voi nguoi dung.',
-        item.severity
+        item.severity,
+        { rule: 'geo_anomaly', targetType: 'username', target: item.username }
       );
     }
 
@@ -163,7 +176,8 @@ async function runAllRules() {
         'Data Exfiltration Detected',
         `Tai khoan "${item.username}" tai/xuat du lieu ${item.count} lan, tong ${item.downloadedMb || 0} MB trong ${config.DATA_EXFIL_TIME_WINDOW}.`,
         'Kiem tra endpoint nhay cam, gioi han export/download va xac minh tai khoan co bi chiem doat khong.',
-        item.severity
+        item.severity,
+        { rule: 'data_exfiltration', targetType: 'username', target: item.username }
       );
     }
 
@@ -175,7 +189,8 @@ async function runAllRules() {
         'LFI / Path Traversal Attempt',
         `IP "${item.ip}" gui payload path traversal ${item.count} lan, khop ${item.signature}: ${item.payload}`,
         'Canonicalize path truoc khi doc file, gioi han root directory va chan cac request ../ hoac file he thong.',
-        item.severity
+        item.severity,
+        { rule: 'path_traversal', targetType: 'ip', target: item.ip }
       );
     }
 
@@ -187,7 +202,8 @@ async function runAllRules() {
         'Malicious Upload Attempt',
         `Tai khoan "${item.username}" tai file nghi doc hai "${item.fileName}" (${item.reason}).`,
         'Quarantine/xoa file vua upload, kiem tra MIME/magic bytes va khong cho thuc thi trong thu muc upload.',
-        item.severity
+        item.severity,
+        { rule: 'malicious_upload', targetType: 'username', target: item.username }
       );
     }
 
@@ -199,7 +215,8 @@ async function runAllRules() {
         'Mass Deletion (Ransomware/Phá hoại)',
         `Tai khoan "${item.username}" da xoa ${item.count} tai nguyen trong ${config.MASS_DELETION_TIME_WINDOW}. Mau target: ${item.sampleTarget || 'N/A'}.`,
         'Tam khoa quyen WRITE/DELETE, kiem tra audit log va khoi phuc du lieu tu backup neu can.',
-        item.severity
+        item.severity,
+        { rule: 'mass_deletion', targetType: 'username', target: item.username }
       );
     }
 

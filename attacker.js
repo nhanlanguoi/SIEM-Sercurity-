@@ -12,6 +12,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { normalizeSecurityEvent } = require('./services/payloadAnalyzer');
 
 const SECURITY_LOG = path.join(__dirname, 'security.log');
 
@@ -31,7 +32,7 @@ function writeLog(action, username, payload = null, ip = '123.45.67.89', country
   };
   if (payload) logEntry.payload = payload;
 
-  fs.appendFileSync(SECURITY_LOG, JSON.stringify(logEntry) + '\n');
+  fs.appendFileSync(SECURITY_LOG, JSON.stringify(normalizeSecurityEvent(logEntry)) + '\n');
 }
 
 // ─── Kịch bản 1: Brute Force Login ──────────────────────────────────────────
@@ -50,15 +51,21 @@ async function attackBruteForce() {
 // ─── Kịch bản 2: SQL Injection ──────────────────────────────────────────────
 async function attackSqlInjection() {
   console.log('\n【2/10】SQL Injection — Chèn SQL vào hệ thống...');
-  writeLog('sqli_attempt', 'anonymous', "Param: q=' OR 1=1 --");
-  console.log('  ➜ Ghi nhận sqli_attempt');
+  for (let i = 0; i < 2; i++) {
+    writeLog('sqli_attempt', 'anonymous', "Param: q=' OR 1=1 --");
+    await sleep(100);
+  }
+  console.log('  ➜ Ghi nhận 2 lần sqli_attempt');
 }
 
 // ─── Kịch bản 3: XSS ────────────────────────────────────────────────────────
 async function attackXss() {
   console.log('\n【3/10】XSS — Cố gắng chèn script độc hại...');
-  writeLog('xss_attempt', 'anonymous', "Param: q=<script>alert(1)</script>");
-  console.log('  ➜ Ghi nhận xss_attempt');
+  for (let i = 0; i < 2; i++) {
+    writeLog('xss_attempt', 'anonymous', "Param: q=<script>alert(1)</script>");
+    await sleep(100);
+  }
+  console.log('  ➜ Ghi nhận 2 lần xss_attempt');
 }
 
 // ─── Kịch bản 4: Privilege Escalation ───────────────────────────────────────
