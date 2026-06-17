@@ -11,8 +11,7 @@ async function sendTelegram(message, config) {
     const url = `https://api.telegram.org/bot${config.TELEGRAM_BOT_TOKEN}/sendMessage`;
     await axios.post(url, {
       chat_id: config.TELEGRAM_CHAT_ID,
-      text: message,
-      parse_mode: 'Markdown'
+      text: message
     });
   } catch (error) {
     console.error('Lỗi gửi cảnh báo Telegram:', error.message);

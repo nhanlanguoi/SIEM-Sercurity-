@@ -62,7 +62,7 @@ async function sendAlert(key, title, detail, recommendation, severity = 'HIGH', 
     await redisClient.set(dedupKey, '1', { EX: 3600 });
 
     const message =
-      `🚨 *CANH BAO AN NINH: ${title}*\n` +
+      `🚨 CANH BAO AN NINH: ${title}\n` +
       `⚠️ Muc do: ${severity}\n` +
       `📌 Chi tiet: ${detail}\n` +
       `🛡️ Khuyen nghi: ${recommendation}`;
