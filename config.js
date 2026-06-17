@@ -7,20 +7,20 @@ module.exports = {
   TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID || 'YOUR_CHAT_ID',
   CHECK_INTERVAL_MS: 5000,
   
-  // Ngưỡng báo động Brute Force (Theo Username/Device ID)
+  // Ngưỡng báo động Brute Force / Password Spraying
   BRUTE_FORCE_THRESHOLD: 5,
   BRUTE_FORCE_TIME_WINDOW: '1m',
 
-  // Ngưỡng báo động SQLi (Thường chỉ cần 1-2 lần là báo động)
-  SQLI_THRESHOLD: 2,
+  // SQLi raw payload matching: 1 payload ro rang la can canh bao
+  SQLI_THRESHOLD: 1,
   SQLI_TIME_WINDOW: '5m',
 
-  // Nguong bao dong XSS
-  XSS_THRESHOLD: 2,
+  // XSS raw payload matching
+  XSS_THRESHOLD: 1,
   XSS_TIME_WINDOW: '5m',
 
-  // Nguong bao dong DDoS / Flood (theo Device ID)
-  DDOS_THRESHOLD: 50,       // > 50 request tu 1 thiet bi
+  // Nguong bao dong DDoS / Flood theo source IP
+  DDOS_THRESHOLD: 50,
   DDOS_TIME_WINDOW: '1m',
 
   // Nguong bao dong Privilege Escalation (leo thang dac quyen)
@@ -30,12 +30,13 @@ module.exports = {
   // Nguong bao dong Geo Anomaly (dang nhap tu nhieu quoc gia)
   GEO_ANOMALY_TIME_WINDOW: '30m',
 
-  // Nguong bao dong Data Exfiltration (ro ri du lieu)
-  DATA_EXFIL_THRESHOLD: 5,  // > 5 lan export du lieu
+  // Nguong bao dong Data Exfiltration: uu tien tong bytes, fallback theo so lan export
+  DATA_EXFIL_THRESHOLD: 5,
+  DATA_EXFIL_BYTES_THRESHOLD: 500 * 1024 * 1024,
   DATA_EXFIL_TIME_WINDOW: '5m',
 
-  // Nguong bao dong Path Traversal (LFI)
-  PATH_TRAVERSAL_THRESHOLD: 2,
+  // Nguong bao dong Path Traversal (LFI/RFI) raw payload
+  PATH_TRAVERSAL_THRESHOLD: 1,
   PATH_TRAVERSAL_TIME_WINDOW: '5m',
 
   // Nguong bao dong Malicious File Upload

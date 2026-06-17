@@ -1,45 +1,52 @@
-async function detectMassDeletion(esClient, config) {
-  const timeWindowStr = config.MASS_DELETION_TIME_WINDOW || '1m';
-  const threshold = config.MASS_DELETION_THRESHOLD || 5; 
-  const attackers = [];
+const {
+  searchRecentLogs,
+  getActor,
+  getMethod,
+  getStatus,
+  firstPresent,
+  normalizeKeyword
+} = require('./ruleUtils');
 
-  const query = {
-    query: {
-      bool: {
-        must: [
-          { match: { action: "resource_deleted" } },
-          { range: { "@timestamp": { gte: `now-${timeWindowStr}` } } }
-        ]
-      }
-    },
-    aggs: {
-      by_user: {
-        terms: { field: "username.keyword", size: 50 }
-      }
-    },
-    size: 0
-  };
+function isSuccessfulDelete(log) {
+  const action = normalizeKeyword(log.action);
+  const method = getMethod(log);
+  const status = getStatus(log);
+
+  if (action === 'resource_deleted') return true;
+  return method === 'DELETE' && (status === 200 || status === 202 || status === 204 || status === 0);
+}
+
+async function detectMassDeletion(esClient, config) {
+  const threshold = config.MASS_DELETION_THRESHOLD || 5;
 
   try {
-    const { body } = await esClient.search({
-      index: 'filebeat-*',
-      body: query
-    });
+    const logs = await searchRecentLogs(esClient, config.MASS_DELETION_TIME_WINDOW || '1m', 2000);
+    const byUser = new Map();
 
-    const buckets = body.aggregations.by_user.buckets;
+    for (const log of logs) {
+      if (!isSuccessfulDelete(log)) continue;
 
-    for (const bucket of buckets) {
-      if (bucket.doc_count >= threshold) {
-        attackers.push({
-          username: bucket.key,
-          count: bucket.doc_count
-        });
-      }
+      const username = getActor(log);
+      const current = byUser.get(username) || {
+        username,
+        count: 0,
+        severity: 'CRITICAL',
+        sampleTarget: firstPresent(log, ['request_uri', 'uri', 'path', 'url.path', 'payload'], '')
+      };
+      current.count += 1;
+      byUser.set(username, current);
     }
+
+    const results = Array.from(byUser.values()).filter(item => item.count >= threshold);
+    if (results.length > 0) {
+      console.log(`[detectMassDeletion] Phat hien ${results.length} tai khoan xoa hang loat`);
+    }
+    return results;
   } catch (err) {
-    console.error('Lỗi khi phân tích Mass Deletion: ' + err.message);
+    if (err?.meta?.statusCode === 404) return [];
+    console.error('[detectMassDeletion] Loi:', err.message || err);
+    return [];
   }
-  return attackers;
 }
 
 module.exports = detectMassDeletion;

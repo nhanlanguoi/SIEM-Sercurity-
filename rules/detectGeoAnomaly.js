@@ -1,50 +1,45 @@
+const {
+  searchRecentLogs,
+  firstPresent,
+  getActor,
+  getIp,
+  normalizeKeyword
+} = require('./ruleUtils');
+
+function isLoginSuccess(log) {
+  const action = normalizeKeyword(log.action);
+  return action === 'login_success' || action === 'auth_success';
+}
+
 async function detectGeoAnomaly(esClient, config) {
   try {
-    // Tìm các tài khoản đăng nhập từ nhiều hơn 1 quốc gia trong khoảng thời gian ngắn
-    const response = await esClient.search({
-      index: 'filebeat-*',
-      size: 0,
-      query: {
-        bool: {
-          must: [
-            { match: { action: 'login_success' } },
-            {
-              range: {
-                '@timestamp': {
-                  gte: `now-${config.GEO_ANOMALY_TIME_WINDOW}`,
-                  lte: 'now'
-                }
-              }
-            }
-          ]
-        }
-      },
-      aggs: {
-        users: {
-          terms: { field: 'username', min_doc_count: 2 },
-          aggs: {
-            countries: {
-              cardinality: { field: 'country' }
-            },
-            country_list: {
-              terms: { field: 'country' }
-            }
-          }
-        }
-      }
-    });
+    const logs = await searchRecentLogs(esClient, config.GEO_ANOMALY_TIME_WINDOW || '30m', 2000);
+    const byUser = new Map();
 
-    const buckets = response?.aggregations?.users?.buckets || [];
-    // Chỉ cảnh báo khi 1 tài khoản đăng nhập từ >= 2 quốc gia khác nhau
-    const anomalies = buckets
-      .filter(b => b.countries?.value >= 2)
-      .map(b => ({
-        username: b.key,
-        countries: b.country_list?.buckets?.map(c => c.key) || []
+    for (const log of logs) {
+      if (!isLoginSuccess(log)) continue;
+
+      const username = getActor(log);
+      const country = firstPresent(log, ['country', 'geo.country_name', 'source.geo.country_name'], '');
+      if (!country) continue;
+
+      const current = byUser.get(username) || { username, countries: new Set(), ips: new Set() };
+      current.countries.add(country);
+      current.ips.add(getIp(log));
+      byUser.set(username, current);
+    }
+
+    const anomalies = Array.from(byUser.values())
+      .filter(item => item.countries.size >= 2)
+      .map(item => ({
+        username: item.username,
+        countries: Array.from(item.countries),
+        ips: Array.from(item.ips),
+        severity: 'CRITICAL'
       }));
 
     if (anomalies.length > 0) {
-      console.log(`[detectGeoAnomaly] Phat hien ${anomalies.length} tai khoan dang nhap bat thuong tu nhieu quoc gia`);
+      console.log(`[detectGeoAnomaly] Phat hien ${anomalies.length} tai khoan dang nhap tu nhieu quoc gia`);
     }
     return anomalies;
   } catch (error) {

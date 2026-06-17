@@ -44,138 +44,162 @@ redisClient.on('error', (err) => console.error('Redis Client Error', err));
 // Redis duoc dung de chong spam canh bao (deduplication)
 // SIEM hoan toan dung ngoai, khong can thiep vao he thong goc
 // -------------------------------------------------------
-async function sendAlert(key, title, detail, recommendation) {
+async function sendAlert(key, title, detail, recommendation, severity = 'HIGH') {
   const dedupKey = `alerted:${key}`;
   const alreadyAlerted = await redisClient.get(dedupKey);
 
   if (!alreadyAlerted) {
     console.log(`\n\ud83d\udea8 [CANH BAO] ${title}`);
+    console.log(`   Muc do   : ${severity}`);
     console.log(`   Chi tiet : ${detail}`);
     console.log(`   Khuyen nghi: ${recommendation}`);
 
     // Ghi vao alerts.log de Kibana hien thi
-    writeAlertLog(title, detail, recommendation);
+    writeAlertLog(title, detail, recommendation, severity);
 
     // Luu vao Redis de tranh gui canh bao trung lap trong 1 gio
     await redisClient.set(dedupKey, '1', { EX: 3600 });
 
     const message =
       `\ud83d\udea8 *CANH BAO AN NINH: ${title}*\n` +
+      `⚠️ Muc do: ${severity}\n` +
       `\ud83d\udccc Chi tiet: ${detail}\n` +
       `\ud83d\udee1\ufe0f Khuyen nghi: ${recommendation}`;
     await notifier.sendTelegram(message, config);
   }
 }
 
+function asAlertObject(value, fallbackKey) {
+  if (typeof value === 'string') {
+    return { username: value, key: `${fallbackKey}:${value}`, count: 1, severity: 'HIGH' };
+  }
+
+  return {
+    ...value,
+    key: value?.key || `${fallbackKey}:${value?.username || value?.ip || value?.target || 'unknown'}`,
+    severity: value?.severity || 'HIGH'
+  };
+}
+
 async function runAllRules() {
   try {
-    // ── Rule 1: Brute Force (dam nhap sai nhieu lan) ──────────────────
+    // ── Rule 1: Brute Force / Password Spraying ───────────────────────
     const bruteForceAttackers = await detectBruteForce(esClient, config);
-    for (const username of bruteForceAttackers) {
+    for (const item of bruteForceAttackers.map(value => asAlertObject(value, 'brute'))) {
       await sendAlert(
-        `brute:${username}`,
-        'Brute Force Attack',
-        `Tai khoan "${username}" dang nhap sai qua ${config.BRUTE_FORCE_THRESHOLD} lan trong ${config.BRUTE_FORCE_TIME_WINDOW}.`,
-        `Khoa tai khoan "${username}" tren he thong cua ban va yeu cau doi mat khau ngay.`
+        item.key,
+        item.attackType || 'Brute Force Attack',
+        `Doi tuong "${item.username}" co ${item.count} su kien dang nhap bat thuong trong ${config.BRUTE_FORCE_TIME_WINDOW}.`,
+        'Kiem tra IP/username lien quan, bat MFA, reset mat khau neu co login_success sau chuoi that bai.',
+        item.severity
       );
     }
 
-    // ── Rule 2: SQL Injection ──────────────────────────────────────────
+    // ── Rule 2: SQL Injection tu raw payload ───────────────────────────
     const sqliAttackers = await detectSqlInjection(esClient, config);
-    for (const username of sqliAttackers) {
+    for (const item of sqliAttackers.map(value => asAlertObject(value, 'sqli'))) {
       await sendAlert(
-        `sqli:${username}`,
+        item.key,
         'SQL Injection Attempt',
-        `Tai khoan "${username}" gui payload SQL doc hai ${config.SQLI_THRESHOLD}+ lan.`,
-        `Kiem tra va viec thi input validation/sanitization o moi endpoint nhan du lieu tu user. Xem xet cha${username}.`
+        `Tai khoan/IP "${item.username || item.ip}" gui payload khop ${item.signature}: ${item.payload}`,
+        'Dung prepared statement/ORM parameter binding, validate input va kiem tra endpoint tra HTTP 2xx voi response lon.',
+        item.severity
       );
     }
 
-    // ── Rule 3: XSS ────────────────────────────────────────────────────
+    // ── Rule 3: XSS tu raw payload ─────────────────────────────────────
     const xssAttackers = await detectXss(esClient, config);
-    for (const username of xssAttackers) {
+    for (const item of xssAttackers.map(value => asAlertObject(value, 'xss'))) {
       await sendAlert(
-        `xss:${username}`,
+        item.key,
         'Cross-Site Scripting (XSS)',
-        `Tai khoan "${username}" chen script doc hai ${config.XSS_THRESHOLD}+ lan.`,
-        `Kiem tra va bat buoc encode tat ca output HTML. Xem xet vhoa tai khoan "${username}".`
+        `${item.xssType || 'XSS attempt'} tu "${item.username}" khop ${item.signature}: ${item.payload}`,
+        'Encode output theo context HTML/JS/URL, sanitize rich text, va kiem tra Stored XSS neu payload nam trong body POST/PUT.',
+        item.severity
       );
     }
 
-    // ── Rule 4: DDoS / Flood ───────────────────────────────────────────
+    // ── Rule 4: DDoS / Flood theo IP ───────────────────────────────────
     const ddosDevices = await detectDdos(esClient, config);
-    for (const { target, count } of ddosDevices) {
+    for (const item of ddosDevices.map(value => asAlertObject(value, 'ddos'))) {
       await sendAlert(
-        `ddos:${target}`,
+        item.key,
         'DDoS / Flood Attack',
-        `Thiet bi "${target}" da gui ${count} request trong ${config.DDOS_TIME_WINDOW} (nguong: ${config.DDOS_THRESHOLD}).`,
-        `Bat Rate Limiting tren CDN/Firewall/API Gateway cua ban. Lien he ISP neu can block IP nguon.`
+        `IP "${item.target || item.ip}" da gui ${item.count} request trong ${config.DDOS_TIME_WINDOW}. Mau URI: ${item.sampleUri || 'N/A'}.`,
+        'Bat rate limit tren CDN/WAF/API Gateway va dua IP vuot nguong vao danh sach chan tam thoi.',
+        item.severity
       );
     }
 
-    // ── Rule 5: Privilege Escalation ──────────────────────────────────
+    // ── Rule 5: Privilege Escalation theo context ──────────────────────
     const privEscAttackers = await detectPrivEsc(esClient, config);
-    for (const username of privEscAttackers) {
+    for (const item of privEscAttackers.map(value => asAlertObject(value, 'privesc'))) {
       await sendAlert(
-        `privesc:${username}`,
+        item.key,
         'Privilege Escalation Attempt',
-        `Tai khoan "${username}" co truy cap vao API cua Admin nhieu lan.`,
-        `Thu hoi token/session cua "${username}" ngay. Kiem tra quyen truy cap va audit log.`
+        `Tai khoan "${item.username}" truy cap endpoint dac quyen ${item.count} lan. URI: ${item.uri || 'N/A'}, HTTP ${item.status || 'N/A'}.`,
+        'Kiem tra RBAC tren endpoint admin, thu hoi session/token nghi ngo va audit cac request 2xx.',
+        item.severity
       );
     }
 
     // ── Rule 6: Geo Anomaly (Impossible Travel) ────────────────────────
     const geoAnomalies = await detectGeoAnomaly(esClient, config);
-    for (const { username, countries } of geoAnomalies) {
+    for (const item of geoAnomalies.map(value => asAlertObject(value, 'geo'))) {
       await sendAlert(
-        `geo:${username}`,
+        item.key,
         'Impossible Travel / Geo Anomaly',
-        `Tai khoan "${username}" dang nhap tu ${countries.join(' va ')} trong ${config.GEO_ANOMALY_TIME_WINDOW}. Khong the di chuyen nhanh nhu vay!`,
-        `Buoc dang xuat tat ca phien cua "${username}" ngay. Yeu cau xac thuc 2 buoc (2FA). Co the tai khoan da bi chiem doat.`
+        `Tai khoan "${item.username}" dang nhap tu ${item.countries.join(' va ')} trong ${config.GEO_ANOMALY_TIME_WINDOW}.`,
+        'Buoc dang xuat tat ca phien, yeu cau MFA va xac minh IP/country voi nguoi dung.',
+        item.severity
       );
     }
 
-    // ── Rule 7: Data Exfiltration ──────────────────────────────────────
+    // ── Rule 7: Data Exfiltration theo volume ──────────────────────────
     const exfilUsers = await detectDataExfil(esClient, config);
-    for (const { username, count } of exfilUsers) {
+    for (const item of exfilUsers.map(value => asAlertObject(value, 'exfil'))) {
       await sendAlert(
-        `exfil:${username}`,
+        item.key,
         'Data Exfiltration Detected',
-        `Tai khoan "${username}" da export/download du lieu ${count} lan trong ${config.DATA_EXFIL_TIME_WINDOW}.`,
-        `Kiem tra audit log ngay. Vo hieu hoa tinh nang export tam thoi. Xem xet tai khoan "${username}" co bi lo lo khong.`
+        `Tai khoan "${item.username}" tai/xuat du lieu ${item.count} lan, tong ${item.downloadedMb || 0} MB trong ${config.DATA_EXFIL_TIME_WINDOW}.`,
+        'Kiem tra endpoint nhay cam, gioi han export/download va xac minh tai khoan co bi chiem doat khong.',
+        item.severity
       );
     }
 
-    // ── Rule 8: Path Traversal ─────────────────────────────────────────
+    // ── Rule 8: Path Traversal tu raw payload ──────────────────────────
     const pathTraversalIPs = await detectPathTraversal(esClient, config);
-    for (const { ip, count } of pathTraversalIPs) {
+    for (const item of pathTraversalIPs.map(value => asAlertObject(value, 'lfi'))) {
       await sendAlert(
-        `lfi:${ip}`,
+        item.key,
         'LFI / Path Traversal Attempt',
-        `IP "${ip}" co truy cap file he thong ${count} lan trong ${config.PATH_TRAVERSAL_TIME_WINDOW}.`,
-        `Kiem tra va bat WAF chan cac chuoi '../' hay '/etc/passwd' tu IP nay.`
+        `IP "${item.ip}" gui payload path traversal ${item.count} lan, khop ${item.signature}: ${item.payload}`,
+        'Canonicalize path truoc khi doc file, gioi han root directory va chan cac request ../ hoac file he thong.',
+        item.severity
       );
     }
 
-    // ── Rule 9: Malicious Upload ───────────────────────────────────────
+    // ── Rule 9: Malicious Upload theo metadata ─────────────────────────
     const uploadAttackers = await detectMaliciousUpload(esClient, config);
-    for (const { username, count } of uploadAttackers) {
+    for (const item of uploadAttackers.map(value => asAlertObject(value, 'upload'))) {
       await sendAlert(
-        `upload:${username}`,
+        item.key,
         'Malicious Upload Attempt',
-        `Tai khoan "${username}" tai len file doc hai (Web Shell) ${count} lan.`,
-        `Xoa ngay file moi tai len cua "${username}" va co lap thu muc upload.`
+        `Tai khoan "${item.username}" tai file nghi doc hai "${item.fileName}" (${item.reason}).`,
+        'Quarantine/xoa file vua upload, kiem tra MIME/magic bytes va khong cho thuc thi trong thu muc upload.',
+        item.severity
       );
     }
 
     // ── Rule 10: Mass Deletion ─────────────────────────────────────────
     const massDeleters = await detectMassDeletion(esClient, config);
-    for (const { username, count } of massDeleters) {
+    for (const item of massDeleters.map(value => asAlertObject(value, 'deletion'))) {
       await sendAlert(
-        `deletion:${username}`,
+        item.key,
         'Mass Deletion (Ransomware/Phá hoại)',
-        `Tai khoan "${username}" da xoa hang loat ${count} du lieu trong ${config.MASS_DELETION_TIME_WINDOW}.`,
-        `Tam khoa quyen WRITE/DELETE cua "${username}" va kiem tra lich su hoat dong.`
+        `Tai khoan "${item.username}" da xoa ${item.count} tai nguyen trong ${config.MASS_DELETION_TIME_WINDOW}. Mau target: ${item.sampleTarget || 'N/A'}.`,
+        'Tam khoa quyen WRITE/DELETE, kiem tra audit log va khoi phuc du lieu tu backup neu can.',
+        item.severity
       );
     }
 

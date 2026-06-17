@@ -1,43 +1,90 @@
-async function detectBruteForce(esClient, config) {
-  try {
-    // @elastic/elasticsearch v8+ trả về response trực tiếp (không có wrapper { body })
-    const response = await esClient.search({
-      index: 'filebeat-*',
-      size: 0,
-      query: {
-        bool: {
-          must: [
-            { match: { action: 'login_failed' } },
-            {
-              range: {
-                '@timestamp': {
-                  gte: `now-${config.BRUTE_FORCE_TIME_WINDOW}`,
-                  lte: 'now'
-                }
-              }
-            }
-          ]
-        }
-      },
-      aggs: {
-        attackers: {
-          terms: { field: 'username', min_doc_count: config.BRUTE_FORCE_THRESHOLD }
-        }
-      }
-    });
+const {
+  searchRecentLogs,
+  firstPresent,
+  getActor,
+  getIp,
+  normalizeKeyword
+} = require('./ruleUtils');
 
-    const buckets = response?.aggregations?.attackers?.buckets || [];
-    if (buckets.length > 0) {
-      console.log(`[detectBruteForce] Tìm thấy ${buckets.length} Tài khoản nghi ngờ`);
+function isLoginFailure(log) {
+  const action = normalizeKeyword(log.action);
+  const status = Number(firstPresent(log, ['http_status', 'http.status_code', 'status'], 0));
+  const uri = normalizeKeyword(firstPresent(log, ['request_uri', 'uri', 'path', 'url.path', 'payload'], ''));
+
+  return action === 'login_failed' ||
+    action === 'auth_failed' ||
+    (uri.includes('/login') && (status === 401 || status === 403));
+}
+
+function isLoginSuccess(log) {
+  const action = normalizeKeyword(log.action);
+  const status = Number(firstPresent(log, ['http_status', 'http.status_code', 'status'], 0));
+  const uri = normalizeKeyword(firstPresent(log, ['request_uri', 'uri', 'path', 'url.path', 'payload'], ''));
+
+  return action === 'login_success' ||
+    action === 'auth_success' ||
+    (uri.includes('/login') && status >= 200 && status < 300);
+}
+
+async function detectBruteForce(esClient, config) {
+  const threshold = config.BRUTE_FORCE_THRESHOLD || 5;
+
+  try {
+    const logs = await searchRecentLogs(esClient, config.BRUTE_FORCE_TIME_WINDOW || '1m', 2000);
+    const byUser = new Map();
+    const byIp = new Map();
+    const successes = [];
+
+    for (const log of logs) {
+      const username = getActor(log);
+      const ip = getIp(log);
+
+      if (isLoginFailure(log)) {
+        byUser.set(username, (byUser.get(username) || 0) + 1);
+        byIp.set(ip, (byIp.get(ip) || { count: 0, users: new Set() }));
+        byIp.get(ip).count += 1;
+        byIp.get(ip).users.add(username);
+      }
+
+      if (isLoginSuccess(log)) {
+        successes.push({ username, ip });
+      }
     }
-    return buckets.map(bucket => bucket.key);
+
+    const findings = [];
+
+    for (const [username, count] of byUser.entries()) {
+      if (count >= threshold) {
+        const compromised = successes.some(item => item.username === username);
+        findings.push({
+          username,
+          count,
+          severity: compromised ? 'CRITICAL' : 'HIGH',
+          attackType: compromised ? 'Compromised account after brute force' : 'Brute force by username'
+        });
+      }
+    }
+
+    for (const [ip, data] of byIp.entries()) {
+      if (data.users.size >= threshold && data.count >= threshold) {
+        findings.push({
+          username: `ip:${ip}`,
+          ip,
+          count: data.count,
+          severity: 'HIGH',
+          attackType: 'Password spraying by source IP',
+          affectedUsers: Array.from(data.users).slice(0, 10)
+        });
+      }
+    }
+
+    if (findings.length > 0) {
+      console.log(`[detectBruteForce] Phat hien ${findings.length} brute force/password spraying raw-log`);
+    }
+    return findings;
   } catch (error) {
-    // Elasticsearch chưa có index nào (chưa có log) → bỏ qua bình thường
-    if (error?.meta?.statusCode === 404) {
-      return [];
-    }
-    // Lỗi kết nối hoặc lỗi khác
-    console.error('[detectBruteForce] Lỗi:', error.message || error);
+    if (error?.meta?.statusCode === 404) return [];
+    console.error('[detectBruteForce] Loi:', error.message || error);
     return [];
   }
 }

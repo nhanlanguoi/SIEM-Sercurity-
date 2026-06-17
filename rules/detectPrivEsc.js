@@ -1,35 +1,53 @@
-async function detectPrivEsc(esClient, config) {
-  try {
-    const response = await esClient.search({
-      index: 'filebeat-*',
-      size: 0,
-      query: {
-        bool: {
-          must: [
-            { match: { action: 'unauthorized_admin_access' } },
-            {
-              range: {
-                '@timestamp': {
-                  gte: `now-${config.PRIV_ESC_TIME_WINDOW}`,
-                  lte: 'now'
-                }
-              }
-            }
-          ]
-        }
-      },
-      aggs: {
-        attackers: {
-          terms: { field: 'username', min_doc_count: config.PRIV_ESC_THRESHOLD }
-        }
-      }
-    });
+const {
+  searchRecentLogs,
+  firstPresent,
+  getActor,
+  getIp,
+  getStatus,
+  incrementCounter,
+  normalizeKeyword
+} = require('./ruleUtils');
 
-    const buckets = response?.aggregations?.attackers?.buckets || [];
-    if (buckets.length > 0) {
-      console.log(`[detectPrivEsc] Phat hien ${buckets.length} tai khoan co leo thang dac quyen`);
+const ADMIN_ENDPOINT = /\/(?:api\/)?(?:admin|management|internal|actuator)\b/i;
+
+function rolesContainAdmin(log) {
+  const roles = firstPresent(log, ['roles', 'user.roles', 'authorities', 'role'], []);
+  const roleText = Array.isArray(roles) ? roles.join(',') : String(roles || '');
+  return /admin|root|superuser/i.test(roleText);
+}
+
+async function detectPrivEsc(esClient, config) {
+  const threshold = config.PRIV_ESC_THRESHOLD || 2;
+  const attackers = new Map();
+
+  try {
+    const logs = await searchRecentLogs(esClient, config.PRIV_ESC_TIME_WINDOW || '5m');
+
+    for (const log of logs) {
+      const action = normalizeKeyword(log.action);
+      const uri = firstPresent(log, ['request_uri', 'uri', 'path', 'url.path', 'payload'], '');
+      const isAdminTarget = ADMIN_ENDPOINT.test(uri);
+      const unauthorizedAction = action === 'unauthorized_admin_access';
+
+      if (!unauthorizedAction && (!isAdminTarget || rolesContainAdmin(log))) continue;
+
+      const username = getActor(log);
+      const status = getStatus(log);
+      const severity = status >= 200 && status < 300 ? 'CRITICAL' : 'MEDIUM';
+      incrementCounter(attackers, username, {
+        username,
+        ip: getIp(log),
+        severity,
+        uri,
+        status
+      });
     }
-    return buckets.map(b => b.key);
+
+    const results = Array.from(attackers.values()).filter(item => item.count >= threshold);
+    if (results.length > 0) {
+      console.log(`[detectPrivEsc] Phat hien ${results.length} tai khoan co dau hieu leo thang dac quyen`);
+    }
+    return results;
   } catch (error) {
     if (error?.meta?.statusCode === 404) return [];
     console.error('[detectPrivEsc] Loi:', error.message || error);
