@@ -1,110 +1,113 @@
-# Tài liệu Kỹ thuật: Hệ thống SIEM Engine
+# 🛡️ Hệ thống SIEM Engine & SOAR (Phiên bản Node.js)
 
-**SIEM Engine** là một hệ thống Quản lý Thông tin và Sự kiện An ninh (Security Information and Event Management) được thiết kế theo hướng **Out-of-Band** (Không can thiệp vào logic của ứng dụng Backend). Hệ thống có nhiệm vụ thu thập log, phân tích, phát hiện các hành vi bất thường và cảnh báo theo thời gian thực (Real-time).
+**SIEM Engine** (Security Information and Event Management) là một hệ thống thu thập, phân tích và quản lý sự kiện an ninh mạng theo thời gian thực (Real-time). Hệ thống này hoạt động độc lập (Out-of-Band) mà không làm ảnh hưởng đến hiệu năng của hệ thống Web Backend chính của bạn.
 
----
-
-## 1. Kiến trúc Hệ thống (Architecture)
-
-Hệ thống được cấu thành từ 5 thành phần chính, hoạt động tuần tự tạo thành một luồng xử lý khép kín:
-
-1. **Nguồn phát Log (Application / `attacker.js`)**: Các ứng dụng (hoặc script giả lập) sẽ ghi log định dạng JSON vào file `security.log`.
-2. **Filebeat**: Một light-weight shipper, liên tục đọc file `security.log` và đẩy trực tiếp vào **Elasticsearch**. Filebeat cũng đọc file `alerts.log` để đẩy lên Kibana hiển thị.
-3. **Elasticsearch (Database)**: Cỗ máy tìm kiếm và phân tích mạnh mẽ, lưu trữ toàn bộ lịch sử log, hỗ trợ truy vấn gộp (Aggregations) với tốc độ mili-giây.
-4. **SIEM Engine (Node.js - `app.js`)**: Trái tim của hệ thống.
-   - Định kỳ (mỗi 5 giây) gọi truy vấn Elasticsearch.
-   - Chạy dữ liệu qua **10 Security Rules** (Luật An ninh).
-   - Nếu phát hiện tấn công, Engine sẽ ghi kết quả vào `alerts.log` và bắn thông báo qua Telegram.
-5. **Redis (Anti-spam Cache)**: Khi một cảnh báo được gửi đi, Engine sẽ lưu một cờ (flag) vào Redis với thời hạn (TTL) là 1 giờ. Trong vòng 1 giờ tiếp theo, các cuộc tấn công tương tự từ cùng User/IP đó sẽ không bắn thông báo Telegram nữa để chống spam tin nhắn.
-6. **Auto-response an toàn (`responses.log`)**: Sau khi có alert mới, Engine ghi hành động phản ứng đề xuất ở chế độ `simulate`. Cơ chế này chưa block IP/khóa tài khoản thật, nhưng đã có hook để tích hợp firewall/backend sau này.
+Hệ thống được tích hợp thêm cơ chế **SOAR (Security Orchestration, Automation, and Response)** cho phép tự động ra quyết định phản ứng ngay lập tức khi phát hiện tấn công (Ví dụ: Tự động khóa IP, tự động khóa tài khoản).
 
 ---
 
-## 2. Danh sách 10 Kịch bản Bảo mật (Security Rules)
+## 1. 🏗️ Kiến trúc Hệ thống (Architecture)
 
-Hệ thống được trang bị 10 quy tắc dựa trên các hành vi tấn công phổ biến nhất hiện nay:
+Hệ thống bao gồm 5 thành phần chính hoạt động phối hợp như một dây chuyền:
 
-| STT | Tên Rule | Mô tả | Mức độ nguy hiểm |
+1. **Nguồn Log (Web Server / API Server):** Các ứng dụng thực tế hoặc script giả lập (`attacker.js`) sẽ ghi log dạng JSON vào file `security.log`.
+2. **Filebeat:** Công cụ chuyên chở log siêu nhẹ. Nó liên tục đọc file `security.log` và đẩy thẳng vào kho dữ liệu.
+3. **Elasticsearch:** Kho dữ liệu khổng lồ (Database). Nơi lưu trữ, lập chỉ mục và cho phép tìm kiếm hàng triệu dòng log với tốc độ siêu tốc.
+4. **SIEM Engine (`app.js`):** Bộ não trung tâm được viết bằng Node.js. 
+   - Cứ mỗi 5 giây, nó lại truy vấn vào Elasticsearch.
+   - So khớp log với **10 kịch bản tấn công (Security Rules)**.
+   - Nếu phát hiện tấn công, nó sẽ gửi tin nhắn cảnh báo đỏ (🚨) qua **Telegram** và kích hoạt SOAR.
+5. **Redis:** Đóng vai trò là bộ nhớ đệm (Cache) giúp chống Spam tin nhắn Telegram (Anti-spam mechanism). Nó ghi nhớ ai đã bị cảnh báo và im lặng trong 1 tiếng tiếp theo.
+
+> 💡 *Chi tiết toàn bộ sơ đồ hoạt động (Flowcharts) của 10 kịch bản đã được vẽ ra thành các file hình khối. Bạn có thể xem tại thư mục `drawio_diagrams` hoặc file `siem_workflows.md` đính kèm trong dự án.*
+
+---
+
+## 2. ⚔️ 10 Kịch Bản Tấn Công (Security Rules)
+
+Hệ thống có khả năng nhận diện và xử lý 10 loại tấn công phổ biến nhất:
+
+| STT | Tên Kịch Bản | Phương pháp phát hiện (Log Field) | Phản ứng tự động (SOAR) |
 | :--- | :--- | :--- | :--- |
-| **1** | **Brute Force** | Phát hiện nhiều lần đăng nhập thất bại liên tiếp vào một tài khoản. | Cao |
-| **2** | **SQL Injection (SQLi)** | Phát hiện input từ người dùng chứa các từ khóa SQL nhạy cảm (`UNION`, `SELECT`, `DROP`). | Cực cao |
-| **3** | **XSS (Cross-Site Scripting)** | Phát hiện payload chứa thẻ `<script>` hoặc Javascript độc hại gửi lên server. | Trung bình/Cao |
-| **4** | **DDoS / HTTP Flood** | Phát hiện lượng Request (lưu lượng) khổng lồ từ một địa chỉ IP duy nhất trong thời gian ngắn (Vượt ngưỡng Rate Limit). | Cao |
-| **5** | **Privilege Escalation** | Phát hiện tài khoản thường (không có đặc quyền) cố tình truy cập vào các đường dẫn (Endpoint) chỉ dành cho Admin. | Cực cao |
-| **6** | **Geo Anomaly (Impossible Travel)** | Đăng nhập thành công từ 2 quốc gia khác nhau cách xa nhau về mặt địa lý trong một khoảng thời gian cực ngắn (ví dụ: Vừa đăng nhập VN xong 5 phút sau đăng nhập ở Nga). | Cực cao |
-| **7** | **Data Exfiltration** | Xuất/Tải xuống (Export) lượng dữ liệu bất thường (Nghi ngờ lấy trộm Data khách hàng). | Cao |
-| **8** | **Path Traversal / LFI** | Cố gắng đọc các tệp tin cấu hình trên server (Chứa các ký tự `../` hoặc `/etc/passwd`). | Cực cao |
-| **9** | **Malicious Upload** | Tải lên hệ thống các tệp tin nguy hiểm (Web Shell dạng `.php`, `.jsp`, `.sh`). | Cực cao |
-| **10**| **Mass Deletion** | Xóa lượng lớn dữ liệu trong thời gian ngắn (Nghi ngờ phá hoại nội bộ hoặc bị dính Ransomware). | Cực cao |
+| **1** | **Brute Force** | Dò mật khẩu (>= 5 lần `login_failed` / phút). | Khóa tài khoản tạm thời. |
+| **2** | **SQL Injection** | Gửi payload chứa chữ ký SQL (`UNION`, `SELECT`, `DROP`). | Đưa IP vào danh sách theo dõi của WAF. |
+| **3** | **XSS** | Gửi thẻ `<script>` hoặc Javascript độc hại. | Chặn IP thực thi script qua WAF. |
+| **4** | **DDoS / HTTP Flood** | Spam Request (>= 50 requests / phút từ 1 IP). | Block hoặc Rate Limit IP tại Firewall. |
+| **5** | **Privilege Escalation** | Tài khoản thường truy cập API của `/admin`. | Thu hồi Session, ép đăng xuất ngay. |
+| **6** | **Geo Anomaly** | 1 tài khoản đăng nhập thành công từ 2 Quốc gia trong 30p. | Khóa tài khoản, yêu cầu xác thực MFA. |
+| **7** | **Data Exfiltration** | Tải trộm lượng lớn dữ liệu nội bộ (Export Data). | Tạm khóa quyền xuất dữ liệu. |
+| **8** | **Path Traversal / LFI**| Cố ý đọc file hệ thống (Chứa ký tự `../` hoặc `/etc/`). | Khóa vĩnh viễn IP trên Firewall. |
+| **9** | **Malicious Upload** | Upload file mã độc (.php, .exe, .sh). | Cách ly/Xóa file tải lên. |
+| **10**| **Mass Deletion** | Xóa lượng lớn dữ liệu (Ransomware / Phá hoại). | Chuyển tài khoản về chế độ Read-Only. |
 
 ---
 
-## 3. Các File Quan trọng trong Source Code
+## 3. 🚀 Hướng Dẫn Cài Đặt & Chạy Dự Án
 
-* `app.js`: File entry point chạy SIEM Engine (Node.js). Xử lý Cronjob và hàm Deduplication (chống spam) qua Redis.
-* `config.js` & `.env`: Quản lý các biến môi trường (Telegram Token, Elastic URL, Redis URL) và các tham số giới hạn (Threshold) cho các Rules.
-* `rules/*.js`: Thư mục chứa logic truy vấn Elasticsearch cho từng kịch bản (mỗi Rule 1 file riêng biệt).
-* `services/notifier.js`: Chứa hàm gửi API đến Telegram Bot.
-* `services/payloadAnalyzer.js`: Chuẩn hóa request thô thành `action` bảo mật như `sqli_attempt`, `xss_attempt`, `path_traversal`.
-* `services/autoResponder.js`: Ghi response mô phỏng vào `responses.log`.
-* `LOG_SCHEMA.md`: Tài liệu schema log chuẩn để tích hợp hệ thống thật.
-* `start_all.sh`: Script "One-click" tự động khởi động Elasticsearch, Kibana, Redis, Filebeat và SIEM Engine.
-* `attacker.js`: Script Node.js dùng để sinh ra Log giả lập chứa các hành vi tấn công, đẩy vào file `security.log`.
+### A. Yêu cầu trước khi chạy
+- Máy tính đã cài đặt sẵn **Node.js**.
+- Đã cài đặt **Redis** (trên máy Mac dùng brew: `brew install redis` và `brew services start redis`).
 
----
-
-## 4. Chuẩn hóa Log và Auto-response
-
-Hệ thống tích hợp nên ghi log theo schema trong `LOG_SCHEMA.md`. Field quan trọng nhất là `action`, ví dụ `login_failed`, `sqli_attempt`, `path_traversal`.
-
-Nếu ứng dụng chỉ có request thô, có thể gọi `normalizeSecurityEvent()` để tự nhận diện payload nguy hiểm trước khi ghi log:
-
-```js
-const { normalizeSecurityEvent } = require('./services/payloadAnalyzer');
-const event = normalizeSecurityEvent(rawRequestEvent);
+### B. Cấu hình hệ thống (.env)
+Tạo hoặc mở file `.env` và điền thông tin Telegram Bot của bạn để nhận thông báo:
+```env
+TELEGRAM_BOT_TOKEN=Điền_Mã_Token_Của_Bạn_Vào_Đây
+TELEGRAM_CHAT_ID=Điền_Chat_ID_Của_Bạn_Vào_Đây
 ```
+*(Nếu không điền, hệ thống sẽ chỉ in log ra màn hình Console mà không gửi Telegram).*
 
-Auto-response được điều khiển bằng biến môi trường:
-
-```bash
-AUTO_RESPONSE_MODE=simulate # mac dinh, chi ghi responses.log
-AUTO_RESPONSE_MODE=off      # tat response
-AUTO_RESPONSE_MODE=enforce  # hook tich hop, chua enforcement that
-```
-
----
-
-## 5. Hướng dẫn Vận hành & Cập nhật
-
-**A. Khởi chạy toàn bộ hệ thống lần đầu:**
+### C. Khởi động toàn bộ Hệ thống "Chỉ với 1 Click"
+Mở Terminal, trỏ vào thư mục dự án và chạy script khởi động tự động:
 ```bash
 ./start_all.sh
 ```
+Script này sẽ làm thay bạn mọi việc:
+1. Dọn dẹp các tiến trình bị kẹt cũ.
+2. Bật Redis (nếu chưa bật).
+3. Bật Elasticsearch & Kibana.
+4. Bật Filebeat.
+5. Bật `SIEM Engine` (`node app.js`).
 
-**B. Khởi động lại SIEM Engine khi có thay đổi (VD: Sửa code, sửa file .env):**
-```bash
-# 1. Tắt tiến trình cũ
-pkill -f "node app.js"
-
-# 2. Xoá bộ đệm chống spam (Tuỳ chọn)
-redis-cli flushall
-
-# 3. Khởi chạy lại Engine ở chế độ chạy ngầm
-nohup node app.js > engine.log 2>&1 &
-```
-
-**C. Xem Log hoạt động trực tiếp:**
+### D. Kiểm tra trạng thái
+Bạn có thể theo dõi xem "Bộ não" của SIEM Engine đang phân tích những gì bằng lệnh:
 ```bash
 tail -f engine.log
 ```
 
-**D. Kiểm thử (Test):**
-Chạy kịch bản sau để thả log tấn công vào hệ thống, SIEM Engine sẽ tự động "cắn câu" và gửi Telegram:
+---
+
+## 4. 🎯 Hướng Dẫn Kiểm Thử (Tấn công giả lập)
+
+Dự án có chuẩn bị sẵn một script "Giả làm Hacker" tên là `attacker.js`. Nó sẽ tấn công liên hoàn 10 kịch bản vào hệ thống.
+
+**Bước 1: (Quan trọng)** Chắc chắn rằng bạn đã xóa bộ nhớ đệm chống Spam (để Telegram không bị chặn tin nhắn từ lần chạy trước):
+```bash
+node -e "const redis = require('redis'); const client = redis.createClient({url: 'redis://localhost:6379'}); client.connect().then(() => client.flushAll()).then(() => {console.log('Đã xoá Redis!'); process.exit(0)});"
+```
+
+**Bước 2:** Kích hoạt cuộc tấn công:
 ```bash
 node attacker.js
 ```
 
-Chạy unit test cho rule/helper:
-```bash
-npm test
-```
+**Kết quả:** 
+Khoảng 5 - 10 giây sau, điện thoại của bạn sẽ liên tục "nổ" thông báo Telegram cảnh báo từ SIEM Engine. Đồng thời, toàn bộ hành động ngăn chặn sẽ được ghi chép làm bằng chứng tại file `responses.log`.
+
+---
+
+## 5. 🛠️ Một số lệnh bảo trì hữu ích
+
+- **Tắt ngang SIEM Engine:** `pkill -f "node app.js"`
+- **Tắt ngang toàn bộ Elastic & Filebeat:** 
+  ```bash
+  pkill -f elasticsearch
+  pkill -f kibana
+  pkill -f filebeat
+  ```
+- **Khởi động lại chỉ riêng SIEM Engine (khi bạn vừa sửa code luật):**
+  ```bash
+  pkill -f "node app.js" && nohup node app.js > engine.log 2>&1 &
+  ```
+
+---
+*Phát triển bởi đội ngũ An Toàn Thông Tin SIEM.*
